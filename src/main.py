@@ -53,8 +53,10 @@ def train(args):
     logger.debug(f'copying model to: {device}')
     model = model.to(device)
     
-    distance = distances.LpDistance(p=2, power=2, normalize_embeddings=False)
-    contrastive_loss = losses.ContrastiveLoss(distance=distance)
+    if args.contrastive_loss == 'ntxent':
+        contrastive_loss = losses.NTXentLoss()
+    elif args.contrastive_loss == 'contrastive':
+        contrastive_loss = losses.ContrastiveLoss()
     
     optimizer = optim.Adam(
         model.parameters(), 
@@ -70,6 +72,10 @@ def train(args):
     model.train()
     while step < args.steps:
         for x, _ in dataloader:
+            
+            x1, x2, f = augment(x)
+            x = torch.cat([x1, x2]).to(device)
+            
             u = buffer.sample(x.shape[0])
             u = model.sample(
                 u.to(device), 
@@ -78,11 +84,6 @@ def train(args):
                 lr=args.langevin_lr
             )
             buffer.update(u.cpu())
-            
-            x1, x2, f = augment(x)
-            u1, u2, v = augment(u)
-            x = torch.cat([x1, x2]).to(device)
-            u = torch.cat([u1, u2]).to(device)
             
             z_pos, e_pos = model.get_energy(x)
             z_neg, e_neg = model.get_energy(u)
@@ -95,19 +96,15 @@ def train(args):
             
             y = torch.arange(f.shape[0])
             f = torch.cat([f, f])
-            v = torch.cat([v, v])
             y = torch.cat([y, y])
             
             loss_contrastive = torch.zeros_like(loss_divergence)
             for j in range(args.nf):
-                z_pos_j = z_pos[f==j, args.dpf*j:args.dpf*j+args.dpf]
-                z_neg_j = z_neg[v==j, args.dpf*j:args.dpf*j+args.dpf]
-                y_pos_j = y[f==j]
-                y_neg_j = y[v==j]
-                loss_contrastive += contrastive_loss(z_pos_j, y_pos_j) / (2*args.nf)
-                loss_contrastive += contrastive_loss(z_neg_j, y_neg_j) / (2*args.nf)
+                z_j = z_pos[f==j, args.dpf*j:args.dpf*j+args.dpf]
+                y_j = y[f==j]
+                loss_contrastive += contrastive_loss(z_j, y_j)
             
-            loss = loss_divergence + loss_contrastive + loss_energy_decay
+            loss = loss_divergence + args.contrastive_weight*loss_contrastive + loss_energy_decay
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_value_(model.parameters(), .01)
@@ -195,6 +192,7 @@ train_parser.add_argument('--lr',
 train_parser.add_argument('--betas',  default=[.9, .999],
                           type=float, nargs='+', 
                           help='Beta parameters of Adam optimizer (default: [0.9, 0.999]).')
+
 train_parser.add_argument('--buffer-size',  
                           type=int, default=10000, 
                           help='Buffer size (default: 10000).')
@@ -208,9 +206,15 @@ train_parser.add_argument('--langevin-lr',
                           type=float, default=10.0,
                           help='Langevin step size (default: 10.0).')
 
+train_parser.add_argument('--contrastive-loss', 
+                          type=str, default='ntxent', 
+                          help='Contrastive Loss (default: ntxent).')
+train_parser.add_argument('--contrastive-weight',
+                          type=float, default=0.1,
+                          help='Weight of the contrastive loss (default: 0.1).')
 train_parser.add_argument('--energy-decay',
-                          type=float, default=100.0,
-                          help='Energy decay margin (default: 100.0).')
+                          type=float, default=10.0,
+                          help='Energy decay margin (default: 10.0).')
 # other
 train_parser.add_argument('--log-interval', 
                           type=int, default=10,
