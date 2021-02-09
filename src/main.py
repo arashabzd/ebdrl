@@ -76,8 +76,8 @@ def train(args):
                 k=args.langevin_steps, 
                 noise=args.langevin_noise,
                 lr=args.langevin_lr
-            )
-            buffer.update(u.cpu())
+            ).cpu()
+            buffer.update(u)
             
             u1, u2, v = augment(u)
             u = torch.cat([u1, u2]).to(device)
