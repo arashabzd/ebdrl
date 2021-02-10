@@ -90,9 +90,7 @@ def train(args):
             
             loss_divergence = torch.mean(e_pos - e_neg)
             
-            decay_pos = torch.clamp(e_pos.pow(2) - args.energy_decay, min=0)
-            decay_neg = torch.clamp(e_neg.pow(2) - args.energy_decay, min=0)
-            loss_energy_decay = torch.mean(decay_pos + decay_neg)
+            loss_energy_decay = torch.mean(e_pos.pow(2) + e_neg.pow(2))
             
             y = torch.arange(f.shape[0])
             f = torch.cat([f, f])
@@ -108,7 +106,10 @@ def train(args):
                 loss_contrastive += contrastive_loss(z_j_pos, y_j_pos)
                 loss_contrastive += contrastive_loss(z_j_neg, y_j_neg)
             
-            loss = loss_divergence + args.contrastive_weight*loss_contrastive + loss_energy_decay
+            loss = loss_divergence
+            loss += args.contrastive_weight * loss_contrastive
+            loss += args.energy_decay * loss_energy_decay
+            
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_value_(model.parameters(), .01)
@@ -214,8 +215,8 @@ train_parser.add_argument('--contrastive-weight',
                           type=float, default=0.1,
                           help='Weight of the contrastive loss (default: 0.1).')
 train_parser.add_argument('--energy-decay',
-                          type=float, default=10.0,
-                          help='Energy decay margin (default: 10.0).')
+                          type=float, default=0.1,
+                          help='Energy decay (default: 0.1).')
 # other
 train_parser.add_argument('--log-interval', 
                           type=int, default=10,
