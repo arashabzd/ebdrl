@@ -106,9 +106,7 @@ def train(args):
                 loss_contrastive += contrastive_loss(z_j_pos, y_j_pos)
                 loss_contrastive += contrastive_loss(z_j_neg, y_j_neg)
             
-            loss = loss_divergence
-            loss += args.contrastive_weight * loss_contrastive
-            loss += args.energy_decay * loss_energy_decay
+            loss = loss_divergence + args.contrastive_weight*loss_contrastive + args.energy_decay*loss_energy_decay
             
             optimizer.zero_grad()
             loss.backward()
