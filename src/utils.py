@@ -12,6 +12,7 @@ def export_model(model, path, input_shape):
     model = model.cpu().eval()
     traced_model = torch.jit.trace(model, torch.zeros(*input_shape), check_trace=False)
     torch.jit.save(traced_model, path)
+    torch.save(model.state_dict(), path+'.statedict')
     return path
 
 def import_model(path):

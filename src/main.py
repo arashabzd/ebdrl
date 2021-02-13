@@ -21,13 +21,9 @@ def train(args):
     if args.dataset == 'dsprites_full':
         transforms = dsprites_transforms
         in_channels = 1
-        n_factors = 5
-        d_per_factor = 2
     elif args.dataset == 'color_dsprites':
         transforms = dsprites_transforms
         in_channels = 3
-        n_factors = 5
-        d_per_factor = 2
     
     logger.debug(f'loading dataset: {args.dataset}')
     dataset = utils.DlibDataset(args.dataset, seed=args.seed)
@@ -38,15 +34,16 @@ def train(args):
         batch_size=args.batch_size,
         num_workers=1,
         pin_memory=True if args.cuda else False,
-        drop_last=True)
+        drop_last=True
+    )
     
     augment = Augmentation(transforms)
     
     logger.debug(f'initializing model: {args.model}')
     model = EBM(encoder=args.model,
                 in_channels=in_channels,
-                n_factors=n_factors,
-                d_per_factor=d_per_factor,
+                n_factors=args.nf,
+                d_per_factor=args.dpf,
                 encoder_head=args.encoder_head,
                 energy_head=args.energy_head,
                 init_mode=args.init_mode)
@@ -70,41 +67,36 @@ def train(args):
     model.train()
     while step < args.steps:
         for x, _ in dataloader:
-            u = buffer.sample(x.shape[0])
+            x1, x2, f = augment(x)
+            x = torch.cat([x1, x2]).to(device)
+            
+            u = buffer.sample(x.shape[0]).to(device)
             u = model.sample(
-                u.to(device), 
+                u, 
                 k=args.langevin_steps, 
                 noise=args.langevin_noise,
                 lr=args.langevin_lr
-            ).cpu()
-            buffer.update(u)
-            
-            u1, u2, v = augment(u)
-            u = torch.cat([u1, u2]).to(device)
-            
-            x1, x2, f = augment(x)
-            x = torch.cat([x1, x2]).to(device)
+            )
+            buffer.update(u.cpu())
             
             z_pos, e_pos = model.get_energy(x)
             z_neg, e_neg = model.get_energy(u)
             
             loss_divergence = torch.mean(e_pos - e_neg)
             
-            loss_energy_decay = torch.mean(e_pos.pow(2) + e_neg.pow(2))
+            decay_pos = torch.clamp(e_pos.pow(2) - 1, min=0)
+            decay_neg = torch.clamp(e_neg.pow(2) - 1, min=0)
+            loss_energy_decay = torch.mean(decay_pos + decay_neg)
             
             y = torch.arange(f.shape[0])
             f = torch.cat([f, f])
-            v = torch.cat([v, v])
             y = torch.cat([y, y])
-            
             loss_contrastive = torch.zeros_like(loss_divergence)
+            
             for j in range(args.nf):
-                z_j_pos = z_pos[f==j, args.dpf*j:args.dpf*j+args.dpf]
-                y_j_pos = y[f==j]
-                z_j_neg = z_neg[v==j, args.dpf*j:args.dpf*j+args.dpf]
-                y_j_neg = y[v==j]
-                loss_contrastive += contrastive_loss(z_j_pos, y_j_pos)
-                loss_contrastive += contrastive_loss(z_j_neg, y_j_neg)
+                z_j = z_pos[f==j, args.dpf*j:args.dpf*j+args.dpf]
+                y_j = y[f==j]
+                loss_contrastive += contrastive_loss(z_j, y_j)
             
             loss = loss_divergence + args.contrastive_weight*loss_contrastive + args.energy_decay*loss_energy_decay
             
@@ -138,6 +130,28 @@ def evaluate(args):
                     seed=args.seed,
                     metrics=args.metrics)
 
+def sample(args):
+    if args.dataset == 'dsprites_full':
+        in_channels = 1
+        cmap = 'gray'
+    elif args.dataset == 'color_dsprites':
+        in_channels = 3
+        cmap = 'viridis'
+    
+    model = utils.import_model(model_path).to(device)
+    x = torch.rand(args.nsamples, in_channels, 64, 64).to(device)
+    x = model.sample(
+        x,
+        noise=args.langevin_noise,
+        k=args.langevin_steps,
+        lr=args.langevin_lr
+    )
+    x = x.cpu()
+    for i in range(args.nsamples):
+        img = x[i].squeeze().numpy()
+        img_path = samples_dir + f'{i}.png'
+        plt.imsave(img_path, img, cmap=cmap)
+    
 
 parser = argparse.ArgumentParser()
 
@@ -230,6 +244,64 @@ eval_parser.add_argument('--metrics',
                          help='List of metrics (default: All available metrics).')
 eval_parser.set_defaults(func=evaluate)
 
+sample_parser = subparsers.add_parser(
+    'sample',
+    help='Sample from a model.'
+)
+
+sample_parser.add_argument('--nsamples',  
+                           type=int, default=64, 
+                           help='Number of samples (default: 64).')
+sample_parser.add_argument('--langevin-steps',  
+                           type=int, default=20, 
+                           help='Number of lagevin steps (default: 20).')
+sample_parser.add_argument('--langevin-noise',
+                           type=float, default=0.005,
+                           help='Langevin noise (default: 0.005).')
+sample_parser.add_argument('--langevin-lr',
+                           type=float, default=10.0,
+                           help='Langevin step size (default: 10.0).')
+sample_parser.set_defaults(func=sample)
+
+
+def run(args):
+    global evaluation_dir, samples_dir, model_path, log_path
+    result_dir = pathlib.Path('./results/')/args.experiment/args.model/args.dataset/str(args.seed)
+    model_dir = result_dir/'saved_model'
+    evaluation_dir = result_dir/'evaluation'
+    samples_dir = result_dir/'samples'
+    log_dir = result_dir/'logs'
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_dir.mkdir(parents=True, exist_ok=True)
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+     
+    evaluation_dir = str(evaluation_dir)
+    samples_dir = str(samples_dir)
+    model_path = str(model_dir/'model.pt')
+    log_path = str(log_dir/(args.func.__name__+'.log')) 
+
+    global logger
+    logger = logging.getLogger()
+    fhandler = logging.FileHandler(filename=log_path, mode='a')
+    formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
+    fhandler.setFormatter(formatter)
+    logger.addHandler(fhandler)
+    logger.setLevel(logging.DEBUG)
+
+    # set seeds
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    
+    global device
+    device = torch.device("cuda" if args.cuda else "cpu")
+
+    logger.debug(args)
+    args.func(args)
+
 if __name__ == '__main__':
     args = parser.parse_args()
     if args.config:
@@ -237,64 +309,6 @@ if __name__ == '__main__':
             configs = [line.split() for line in config_file.read().splitlines() if line]
         for config in configs:
             args = parser.parse_args(config)
-            result_dir = pathlib.Path('./results/')/args.experiment/args.model/args.dataset/str(args.seed)
-            model_dir = result_dir/'saved_model'
-            evaluation_dir = result_dir/'evaluation'
-            log_dir = result_dir/'logs'
-            
-            model_dir.mkdir(parents=True, exist_ok=True)
-            evaluation_dir.mkdir(parents=True, exist_ok=True)
-            log_dir.mkdir(parents=True, exist_ok=True)
-            
-            evaluation_dir = str(evaluation_dir)
-            model_path = str(model_dir/'model.pt')
-            log_path = str(log_dir/(args.func.__name__+'.log')) 
-            
-            logger = logging.getLogger()
-            fhandler = logging.FileHandler(filename=log_path, mode='a')
-            formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
-            fhandler.setFormatter(formatter)
-            logger.addHandler(fhandler)
-            logger.setLevel(logging.DEBUG)
-            
-            # set seeds
-            random.seed(args.seed)
-            np.random.seed(args.seed)
-            torch.manual_seed(args.seed)
-            torch.cuda.manual_seed(args.seed)
-            
-            device = torch.device("cuda" if args.cuda else "cpu")
-            
-            logger.debug(args)
-            args.func(args)
+            run(args)
     else:
-        result_dir = pathlib.Path('./results/')/args.experiment/args.model/args.dataset/str(args.seed)
-        model_dir = result_dir/'saved_model'
-        evaluation_dir = result_dir/'evaluation'
-        log_dir = result_dir/'logs'
-        
-        model_dir.mkdir(parents=True, exist_ok=True)
-        evaluation_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        
-        evaluation_dir = str(evaluation_dir)
-        model_path = str(model_dir/'model.pt')
-        log_path = str(log_dir/(args.func.__name__+'.log'))
-        
-        logger = logging.getLogger()
-        fhandler = logging.FileHandler(filename=log_path, mode='a')
-        formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
-        fhandler.setFormatter(formatter)
-        logger.addHandler(fhandler)
-        logger.setLevel(logging.DEBUG)
-        
-        # set seeds
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-        
-        device = torch.device("cuda" if args.cuda else "cpu")
-        
-        logger.debug(args)
-        args.func(args)
+        run(args)
