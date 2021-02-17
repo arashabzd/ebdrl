@@ -16,7 +16,6 @@ from .evaluation import compute_metrics
 from . import utils
 
 
-
 def train(args):
     if args.dataset == 'dsprites_full':
         transforms = dsprites_transforms
@@ -24,9 +23,15 @@ def train(args):
     elif args.dataset == 'color_dsprites':
         transforms = dsprites_transforms
         in_channels = 3
-    
+    elif args.dataset == 'scream_dsprites':
+        transforms = dsprites_transforms
+        in_channels = 3
+        
     logger.debug(f'loading dataset: {args.dataset}')
-    dataset = utils.DlibDataset(args.dataset, seed=args.seed)
+    dataset = utils.DlibDataset(
+        args.dataset, 
+        seed=args.seed
+    )
     
     logger.debug(f'initializing dataloader')
     dataloader = DataLoader(
@@ -40,26 +45,39 @@ def train(args):
     augment = Augmentation(transforms)
     
     logger.debug(f'initializing model: {args.model}')
-    model = EBM(encoder=args.model,
-                in_channels=in_channels,
-                n_factors=args.nf,
-                d_per_factor=args.dpf,
-                encoder_head=args.encoder_head,
-                energy_head=args.energy_head,
-                init_mode=args.init_mode)
+    model = EBM(
+        encoder=args.model,
+        in_channels=in_channels,
+        n_factors=augment.n_factors,
+        d_per_factor=args.dpf,
+        free_dim=args.free_dim,
+        encoder_head=args.encoder_head,
+        energy_head=args.energy_head,
+        init_mode=args.init_mode
+    )
     logger.debug(f'copying model to: {device}')
     model = model.to(device)
     
-    distance = distances.LpDistance(p=2, power=2, normalize_embeddings=False)
-    contrastive_loss = losses.ContrastiveLoss(distance=distance)
+    distance = distances.LpDistance(
+        p=2, 
+        power=2, 
+        normalize_embeddings=False
+    )
+    contrastive_loss = losses.ContrastiveLoss(
+        distance=distance
+    )
     
     optimizer = optim.Adam(
         model.parameters(), 
-        lr=args.lr, betas=args.betas
+        lr=args.lr, 
+        betas=args.betas
     )
     
     logger.debug(f'initializing buffer: {args.buffer_size}')
-    buffer = utils.Buffer(p=.95, max_len=args.buffer_size)
+    buffer = utils.Buffer(
+        p=.95, 
+        max_len=args.buffer_size
+    )
     buffer.update(torch.rand(args.buffer_size, in_channels, 64, 64))
     
     logger.debug(f'training:')
@@ -69,36 +87,38 @@ def train(args):
         for x, _ in dataloader:
             x1, x2, f = augment(x)
             x = torch.cat([x1, x2]).to(device)
-            
-            u = buffer.sample(x.shape[0]).to(device)
-            u = model.sample(
-                u, 
-                k=args.langevin_steps, 
-                noise=args.langevin_noise,
-                lr=args.langevin_lr
-            )
-            buffer.update(u.cpu())
-            
             z_pos, e_pos = model.get_energy(x)
-            z_neg, e_neg = model.get_energy(u)
             
-            loss_divergence = torch.mean(e_pos - e_neg)
+            if args.divergence_weight > 0:
+                u = buffer.sample(x.shape[0]).to(device)
+                u = model.sample(
+                    u, 
+                    k=args.langevin_steps, 
+                    noise=args.langevin_noise,
+                    lr=args.langevin_lr
+                )
+                buffer.update(u.cpu())
+                z_neg, e_neg = model.get_energy(u)
+                loss_divergence = torch.mean(e_pos - e_neg)
+                
+                decay_pos = torch.clamp(e_pos.pow(2) - 1, min=0)
+                decay_neg = torch.clamp(e_neg.pow(2) - 1, min=0)
+                loss_energy_decay = torch.mean(decay_pos + decay_neg)
+            else:
+                loss_divergence = torch.zeros(1).to(device)
+                loss_energy_decay = torch.zeros(1).to(device)
             
-            decay_pos = torch.clamp(e_pos.pow(2) - 1, min=0)
-            decay_neg = torch.clamp(e_neg.pow(2) - 1, min=0)
-            loss_energy_decay = torch.mean(decay_pos + decay_neg)
             
             y = torch.arange(f.shape[0])
             f = torch.cat([f, f])
             y = torch.cat([y, y])
             loss_contrastive = torch.zeros_like(loss_divergence)
-            
-            for j in range(args.nf):
+            for j in range(augment.n_factors):
                 z_j = z_pos[f==j, args.dpf*j:args.dpf*j+args.dpf]
                 y_j = y[f==j]
                 loss_contrastive += contrastive_loss(z_j, y_j)
             
-            loss = loss_divergence + args.contrastive_weight*loss_contrastive + args.energy_decay*loss_energy_decay
+            loss = args.divergence_weight*loss_divergence + args.contrastive_weight*loss_contrastive + args.energy_decay*loss_energy_decay
             
             optimizer.zero_grad()
             loss.backward()
@@ -108,10 +128,10 @@ def train(args):
             
             if step % args.log_interval == 0:
                 log = (
-                    f'Iteration {step}: loss={loss:.5f}, '
-                    f'loss_contrastive={loss_contrastive:.5f}, '
-                    f'loss_divergence={loss_divergence:.5f}, '
-                    f'loss_energy_decay={loss_energy_decay:.5f}'
+                    f'Iteration {step}: loss={loss.item():.5f}, '
+                    f'loss_contrastive={loss_contrastive.item():.5f}, '
+                    f'loss_divergence={loss_divergence.item():.5f}, '
+                    f'loss_energy_decay={loss_energy_decay.item():.5f}'
                 )
                 logger.info(log)
                 
@@ -129,30 +149,7 @@ def evaluate(args):
                     device=device, 
                     seed=args.seed,
                     metrics=args.metrics)
-
-def sample(args):
-    if args.dataset == 'dsprites_full':
-        in_channels = 1
-        cmap = 'gray'
-    elif args.dataset == 'color_dsprites':
-        in_channels = 3
-        cmap = 'viridis'
     
-    model = utils.import_model(model_path).to(device)
-    x = torch.rand(args.nsamples, in_channels, 64, 64).to(device)
-    x = model.sample(
-        x,
-        noise=args.langevin_noise,
-        k=args.langevin_steps,
-        lr=args.langevin_lr
-    )
-    x = x.cpu()
-    for i in range(args.nsamples):
-        img = x[i].squeeze().numpy()
-        img_path = samples_dir + f'{i}.png'
-        plt.imsave(img_path, img, cmap=cmap)
-    
-
 parser = argparse.ArgumentParser()
 
 # general parameters
@@ -181,16 +178,16 @@ train_parser = subparsers.add_parser(
     help='Train a model.'
 )
 # model parameters
-train_parser.add_argument('--nf',  
-                          type=int, default=5, 
-                          help='Number of factors (default: 5).')
 train_parser.add_argument('--dpf',  
                           type=int, default=2, 
                           help='Dimension per factor (default: 2).')
+train_parser.add_argument('--free-dim',  
+                          type=int, default=0, 
+                          help='Number of free dimensions of representation (default: 0).')
 train_parser.add_argument('--encoder-head',  default=[],
                           type=int, nargs='+', 
                           help='Encoder head hidden layers as a list of ints (default: []).')
-train_parser.add_argument('--energy-head',  default=[],
+train_parser.add_argument('--energy-head',  default=[1000, 1000, 1000],
                           type=int, nargs='+', 
                           help='Energy head hidden layers as a list of ints (default: []).')
 train_parser.add_argument('--init-mode', 
@@ -201,12 +198,12 @@ train_parser.add_argument('--batch-size',
                           type=int, default=64, 
                           help='Batch size (default: 64).')
 train_parser.add_argument('--steps',  
-                          type=int, default=300000, 
-                          help='Number of training steps (iterations) (default: 300000).')
+                          type=int, default=100000, 
+                          help='Number of training steps (iterations) (default: 100000).')
 train_parser.add_argument('--lr',
                           type=float, default=0.0001,
                           help='Learning rate (default: 0.0001).')
-train_parser.add_argument('--betas',  default=[.9, .999],
+train_parser.add_argument('--betas',  default=[0.9, 0.999],
                           type=float, nargs='+', 
                           help='Beta parameters of Adam optimizer (default: [0.9, 0.999]).')
 
@@ -222,7 +219,9 @@ train_parser.add_argument('--langevin-noise',
 train_parser.add_argument('--langevin-lr',
                           type=float, default=10.0,
                           help='Langevin step size (default: 10.0).')
-
+train_parser.add_argument('--divergence-weight',
+                          type=float, default=1.0,
+                          help='Weight of the contrastive divergence loss (default: 1.0).')
 train_parser.add_argument('--contrastive-weight',
                           type=float, default=0.1,
                           help='Weight of the contrastive loss (default: 0.1).')
@@ -231,8 +230,8 @@ train_parser.add_argument('--energy-decay',
                           help='Energy decay (default: 0.1).')
 # other
 train_parser.add_argument('--log-interval', 
-                          type=int, default=10,
-                          help='Tensorboard log interval (default: 10).')
+                          type=int, default=100,
+                          help='Tensorboard log interval (default: 100).')
 train_parser.set_defaults(func=train)
 
 eval_parser = subparsers.add_parser(
@@ -243,25 +242,6 @@ eval_parser.add_argument('--metrics',
                          type=str, default='', 
                          help='List of metrics (default: All available metrics).')
 eval_parser.set_defaults(func=evaluate)
-
-sample_parser = subparsers.add_parser(
-    'sample',
-    help='Sample from a model.'
-)
-
-sample_parser.add_argument('--nsamples',  
-                           type=int, default=64, 
-                           help='Number of samples (default: 64).')
-sample_parser.add_argument('--langevin-steps',  
-                           type=int, default=20, 
-                           help='Number of lagevin steps (default: 20).')
-sample_parser.add_argument('--langevin-noise',
-                           type=float, default=0.005,
-                           help='Langevin noise (default: 0.005).')
-sample_parser.add_argument('--langevin-lr',
-                           type=float, default=10.0,
-                           help='Langevin step size (default: 10.0).')
-sample_parser.set_defaults(func=sample)
 
 
 def run(args):
@@ -283,8 +263,8 @@ def run(args):
     log_path = str(log_dir/(args.func.__name__+'.log')) 
 
     global logger
-    logger = logging.getLogger()
-    fhandler = logging.FileHandler(filename=log_path, mode='a')
+    logger = logging.getLogger(args.experiment)
+    fhandler = logging.FileHandler(filename=log_path, mode='w')
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
     fhandler.setFormatter(formatter)
     logger.addHandler(fhandler)

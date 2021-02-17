@@ -7,7 +7,8 @@ from .nn import *
 
 class EBM(nn.Module):
     def __init__(self, encoder, in_channels, 
-                 n_factors, d_per_factor, encoder_head=[],
+                 n_factors, d_per_factor, free_dim,
+                 encoder_head=[1000, 1000, 1000],
                  energy_head=[],
                  init_mode=None):
         super().__init__()
@@ -28,8 +29,9 @@ class EBM(nn.Module):
         elif encoder == 'wider-resnet':
             self.encoder = ResNet(in_channels, width=3, init_mode=init_mode)
         
-        self.encoder_head = MLP(256, encoder_head, n_factors*d_per_factor, init_mode) 
-        self.energy_head = MLP(n_factors*d_per_factor, energy_head, 1, init_mode)
+        z_dim = n_factors*d_per_factor + free_dim
+        self.encoder_head = MLP(256, encoder_head, z_dim, init_mode) 
+        self.energy_head = MLP(z_dim, energy_head, 1, init_mode)
     
     def get_representation(self, x):
         c = self.encoder(x)
