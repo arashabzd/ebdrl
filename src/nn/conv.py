@@ -19,7 +19,8 @@ class ConvNet(nn.Module):
             conv4x4(w2, w2, stride=2, padding=1),
             Swish(),
             nn.Flatten(),
-            linear(w2*4*4, 256)
+            linear(w2*4*4, 256),
+            Swish()
         )
 
         if init_mode is not None:
@@ -65,7 +66,8 @@ class ResNet(nn.Module):
             ResBlock(w1, w2, True),
             ResBlock(w2, w2, True),
             nn.Flatten(),
-            linear(w2*4*4, 256)
+            linear(w2*4*4, 256),
+            Swish()
         )
         if init_mode is not None:
             self.weight_init(init_mode)

@@ -211,8 +211,8 @@ train_parser.add_argument('--buffer-size',
                           type=int, default=10000, 
                           help='Buffer size (default: 10000).')
 train_parser.add_argument('--langevin-steps',  
-                          type=int, default=20, 
-                          help='Number of lagevin steps (default: 20).')
+                          type=int, default=60, 
+                          help='Number of lagevin steps (default: 60).')
 train_parser.add_argument('--langevin-noise',
                           type=float, default=0.005,
                           help='Langevin noise (default: 0.005).')
