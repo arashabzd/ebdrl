@@ -8,8 +8,8 @@ from .nn import *
 class EBM(nn.Module):
     def __init__(self, encoder, in_channels, 
                  n_factors, d_per_factor, free_dim,
-                 encoder_head=[1000, 1000, 1000],
-                 energy_head=[],
+                 encoder_head=[],
+                 energy_head=[1000, 1000, 1000],
                  init_mode=None):
         super().__init__()
         self.in_channels = in_channels
