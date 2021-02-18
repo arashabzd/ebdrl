@@ -52,7 +52,7 @@ class DlibDataset(Dataset):
         y = factors.numpy()
         x = self.dataset.sample_observations_from_factors(y, self.random_state)
         x = torch.from_numpy(np.moveaxis(x, 3, 1))
-        return x
+        return x.to(torch.float32)
     
     def sample(self, n):
         y = self.sample_factors(n)
