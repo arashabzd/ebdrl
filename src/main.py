@@ -84,9 +84,11 @@ def train(args):
     step = 0
     model.train()
     while step < args.steps:
-        for x, _ in dataloader:
+        for x, y in dataloader:
             x1, x2, f = augment(x)
-            x = torch.cat([x1, x2]).to(device)
+            if not args.ws:
+                x = torch.cat([x1, x2])
+            x = x.to(device)
             z_pos, e_pos = model.get_energy(x)
             
             if args.divergence_weight > 0:
@@ -109,13 +111,17 @@ def train(args):
                 loss_energy_decay = torch.zeros(1).to(device)
             
             
-            y = torch.arange(f.shape[0])
-            f = torch.cat([f, f])
-            y = torch.cat([y, y])
+            if not args.ws:
+                y = torch.arange(f.shape[0])
+                f = torch.cat([f, f])
+                y = torch.cat([y, y])
             loss_contrastive = torch.zeros_like(loss_divergence)
             for j in range(augment.n_factors):
                 z_j = z_pos[f==j, args.dpf*j:args.dpf*j+args.dpf]
-                y_j = y[f==j]
+                if args.ws:
+                    y_j = y[f==j, j]
+                else:
+                    y_j = y[f==j]
                 loss_contrastive += contrastive_loss(z_j, y_j)
             
             loss = args.divergence_weight*loss_divergence + args.contrastive_weight*loss_contrastive + args.energy_decay*loss_energy_decay
@@ -178,6 +184,9 @@ train_parser = subparsers.add_parser(
     help='Train a model.'
 )
 # model parameters
+train_parser.add_argument('--ws',  
+                          action='store_true', default=False, 
+                          help='Weak Supervision.')
 train_parser.add_argument('--dpf',  
                           type=int, default=2, 
                           help='Dimension per factor (default: 2).')

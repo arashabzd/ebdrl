@@ -25,6 +25,7 @@ def make_representor(model, device):
     def represent(x):
         x = np.moveaxis(x, 3, 1)
         x = torch.from_numpy(x).to(device)
+        x = x.to(torch.float32)
         with torch.no_grad():
             z = model(x)
         return z.cpu().numpy()
